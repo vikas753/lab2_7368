@@ -8,4 +8,5 @@ clean:
 	rm canny 
 
 test:
-	test -s ./canny || { echo " Canny executable doesnt exist "; exit 1; }
+	./canny beachbus.pgm 0.6 0.3 0.8
+	eog beachbus.pgm_s_0.60_l_0.30_h_0.80.pgm	

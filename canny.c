@@ -712,11 +712,11 @@ non_max_supp(short *mag, short *gradx, short *grady, int nrows, int ncols,
    ****************************************************************************/
    for(rowcount=1,magrowptr=mag+ncols+1,gxrowptr=gradx+ncols+1,
       gyrowptr=grady+ncols+1,resultrowptr=result+ncols+1;
-      rowcount<nrows-2; 
+      rowcount<=nrows-2; 
       rowcount++,magrowptr+=ncols,gyrowptr+=ncols,gxrowptr+=ncols,
       resultrowptr+=ncols){   
       for(colcount=1,magptr=magrowptr,gxptr=gxrowptr,gyptr=gyrowptr,
-         resultptr=resultrowptr;colcount<ncols-2; 
+         resultptr=resultrowptr;colcount<=ncols-2; 
          colcount++,magptr++,gxptr++,gyptr++,resultptr++){   
          m00 = *magptr;
          if(m00 == 0){
