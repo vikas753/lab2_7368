@@ -75,9 +75,6 @@ void magnitude_x_y(short int *delta_x, short int *delta_y, int rows, int cols,
         short int **magnitude);
 void apply_hysteresis(short int *mag, unsigned char *nms, int rows, int cols,
         float tlow, float thigh, unsigned char *edge);
-void radian_direction(short int *delta_x, short int *delta_y, int rows,
-    int cols, float **dir_radians, int xdirtag, int ydirtag);
-double angle_radians(double x, double y);
 void non_max_supp(short *mag, short *gradx, short *grady, int nrows, int ncols,unsigned char *result); 
 
 main(int argc, char *argv[])
@@ -169,13 +166,11 @@ main(int argc, char *argv[])
 void canny(unsigned char *image, int rows, int cols, float sigma,
          float tlow, float thigh, unsigned char **edge, char *fname)
 {
-   FILE *fpdir=0;          /* File to write the gradient image to.     */
    unsigned char *nms;        /* Points that are local maximal magnitude. */
    short int *smoothedim,     /* The image after gaussian smoothing.      */
              *delta_x,        /* The first devivative image, x-direction. */
              *delta_y,        /* The first derivative image, y-direction. */
              *magnitude;      /* The magnitude of the gadient image.      */
-   float *dir_radians=0;   /* Gradient direction image.                */
 
    /****************************************************************************
    * Perform gaussian smoothing on the image using the input standard
@@ -189,30 +184,6 @@ void canny(unsigned char *image, int rows, int cols, float sigma,
    ****************************************************************************/
    if(VERBOSE) printf("Computing the X and Y first derivatives.\n");
    derrivative_x_y(smoothedim, rows, cols, &delta_x, &delta_y);
-
-   /****************************************************************************
-   * This option to write out the direction of the edge gradient was added
-   * to make the information available for computing an edge quality figure
-   * of merit.
-   ****************************************************************************/
-   if(fname != 0){
-      /*************************************************************************
-      * Compute the direction up the gradient, in radians that are
-      * specified counteclockwise from the positive x-axis.
-      *************************************************************************/
-      radian_direction(delta_x, delta_y, rows, cols, &dir_radians, -1, -1);
-
-      /*************************************************************************
-      * Write the gradient direction image out to a file.
-      *************************************************************************/
-      if((fpdir = fopen(fname, "wb")) == 0){
-         fprintf(stderr, "Error opening the file %s for writing.\n", fname);
-         exit(1);
-      }
-      fwrite(dir_radians, sizeof(float), rows*cols, fpdir);
-      fclose(fpdir);
-      free(dir_radians);
-   }
 
    /****************************************************************************
    * Compute the magnitude of the gradient.
@@ -253,76 +224,6 @@ void canny(unsigned char *image, int rows, int cols, float sigma,
    free(nms);
 }
 
-/*******************************************************************************
-* Procedure: radian_direction
-* Purpose: To compute a direction of the gradient image from component dx and
-* dy images. Because not all derriviatives are computed in the same way, this
-* code allows for dx or dy to have been calculated in different ways.
-*
-* FOR X:  xdirtag = -1  for  [-1 0  1]
-*         xdirtag =  1  for  [ 1 0 -1]
-*
-* FOR Y:  ydirtag = -1  for  [-1 0  1]'
-*         ydirtag =  1  for  [ 1 0 -1]'
-*
-* The resulting angle is in radians measured counterclockwise from the
-* xdirection. The angle points "up the gradient".
-*******************************************************************************/
-void radian_direction(short int *delta_x, short int *delta_y, int rows,
-    int cols, float **dir_radians, int xdirtag, int ydirtag)
-{
-   int r, c, pos;
-   float *dirim=0;
-   double dx, dy;
-
-   /****************************************************************************
-   * Allocate an image to store the direction of the gradient.
-   ****************************************************************************/
-   if((dirim = (float *) calloc(rows*cols, sizeof(float))) == 0){
-      fprintf(stderr, "Error allocating the gradient direction image.\n");
-      exit(1);
-   }
-   *dir_radians = dirim;
-
-   for(r=0,pos=0;r<rows;r++){
-      for(c=0;c<cols;c++,pos++){
-         dx = (double)delta_x[pos];
-         dy = (double)delta_y[pos];
-
-         if(xdirtag == 1) dx = -dx;
-         if(ydirtag == -1) dy = -dy;
-
-         dirim[pos] = (float)angle_radians(dx, dy);
-      }
-   }
-}
-
-/*******************************************************************************
-* FUNCTION: angle_radians
-* PURPOSE: This procedure computes the angle of a vector with components x and
-* y. It returns this angle in radians with the answer being in the range
-* 0 <= angle <2*PI.
-*******************************************************************************/
-double angle_radians(double x, double y)
-{
-   double xu, yu, ang;
-
-   xu = fabs(x);
-   yu = fabs(y);
-
-   if((xu == 0) && (yu == 0)) return(0);
-
-   ang = atan(yu/xu);
-
-   if(x >= 0){
-      if(y >= 0) return(ang);
-      else return(2*M_PI - ang);
-   }
-   else{
-      if(y >= 0) return(M_PI - ang);
-      else return(M_PI + ang);
-   }
-}
 
 /*******************************************************************************
 * PROCEDURE: magnitude_x_y
@@ -888,6 +789,11 @@ void non_max_supp(short *mag, short *gradx, short *grady, int nrows, int ncols,u
 #include <stdlib.h>
 #include <string.h>
 
+#define MAX_ROWS 240
+#define MAX_COLS 320
+
+char read_image_buffer[MAX_ROWS*MAX_COLS];
+
 /******************************************************************************
 * Function: read_pgm_image
 * Purpose: This function reads in an image in PGM format. The image can be
@@ -932,18 +838,20 @@ unsigned int read_pgm_image(char *infilename, unsigned char **image, int *rows,
    sscanf(buf, "%d %d", cols, rows);
    do{ fgets(buf, 70, fp); }while(buf[0] == '#');  /* skip all comment lines */
    
-   /***************************************************************************
-   * Allocate memory to store the image then read the image from the file.
-   ***************************************************************************/
-   if(((*image) = (unsigned char *) malloc((*rows)*(*cols))) == 0){
-      fprintf(stderr, "Memory allocation failure in read_pgm_image().\n");
-      if(fp != stdin) fclose(fp);
-      return(0);
+   if(((*rows) > MAX_ROWS) || ((*cols) > MAX_COLS))
+   {
+     fprintf(stderr, "Image size exceeded in read_pgm_image().\n ");
    }
+   
+   /***************************************************************************
+   * Assign the max buffer to store image
+   ***************************************************************************/
+
+   (*image) = (unsigned char *) read_image_buffer;
+
    if((unsigned int)(*rows) != fread((*image), (*cols), (*rows), fp)){
       fprintf(stderr, "Error reading the image data in read_pgm_image().\n");
       if(fp != stdin) fclose(fp);
-      free((*image));
       return(0);
    }
 
@@ -990,130 +898,6 @@ int write_pgm_image(char *outfilename, unsigned char *image, int rows,
       fprintf(stderr, "Error writing the image data in write_pgm_image().\n");
       if(fp != stdout) fclose(fp);
       return(0);
-   }
-
-   if(fp != stdout) fclose(fp);
-   return(1);
-}
-
-/******************************************************************************
-* Function: read_ppm_image
-* Purpose: This function reads in an image in PPM format. The image can be
-* read in from either a file or from standard input. The image is only read
-* from standard input when infilename = NULL. Because the PPM format includes
-* the number of columns and the number of rows in the image, these are read
-* from the file. Memory to store the image is allocated in this function.
-* All comments in the header are discarded in the process of reading the
-* image. Upon failure, this function returns 0, upon sucess it returns 1.
-******************************************************************************/
-int read_ppm_image(char *infilename, unsigned char **image_red, 
-    unsigned char **image_grn, unsigned char **image_blu, int *rows,
-    int *cols)
-{
-   FILE *fp;
-   char buf[71];
-   int p, size;
-
-   /***************************************************************************
-   * Open the input image file for reading if a filename was given. If no
-   * filename was provided, set fp to read from standard input.
-   ***************************************************************************/
-   if(infilename == 0) fp = stdin;
-   else{
-      if((fp = fopen(infilename, "r")) == 0){
-         fprintf(stderr, "Error reading the file %s in read_ppm_image().\n",
-            infilename);
-         return(0);
-      }
-   }
-
-   /***************************************************************************
-   * Verify that the image is in PPM format, read in the number of columns
-   * and rows in the image and scan past all of the header information.
-   ***************************************************************************/
-   fgets(buf, 70, fp);
-   if(strncmp(buf,"P6",2) != 0){
-      fprintf(stderr, "The file %s is not in PPM format in ", infilename);
-      fprintf(stderr, "read_ppm_image().\n");
-      if(fp != stdin) fclose(fp);
-      return(0);
-   }
-   do{ fgets(buf, 70, fp); }while(buf[0] == '#');  /* skip all comment lines */
-   sscanf(buf, "%d %d", cols, rows);
-   do{ fgets(buf, 70, fp); }while(buf[0] == '#');  /* skip all comment lines */
-
-   /***************************************************************************
-   * Allocate memory to store the image then read the image from the file.
-   ***************************************************************************/
-   if(((*image_red) = (unsigned char *) malloc((*rows)*(*cols))) == 0){
-      fprintf(stderr, "Memory allocation failure in read_ppm_image().\n");
-      if(fp != stdin) fclose(fp);
-      return(0);
-   }
-   if(((*image_grn) = (unsigned char *) malloc((*rows)*(*cols))) == 0){
-      fprintf(stderr, "Memory allocation failure in read_ppm_image().\n");
-      if(fp != stdin) fclose(fp);
-      return(0);
-   }
-   if(((*image_blu) = (unsigned char *) malloc((*rows)*(*cols))) == 0){
-      fprintf(stderr, "Memory allocation failure in read_ppm_image().\n");
-      if(fp != stdin) fclose(fp);
-      return(0);
-   }
-
-   size = (*rows)*(*cols);
-   for(p=0;p<size;p++){
-      (*image_red)[p] = (unsigned char)fgetc(fp);
-      (*image_grn)[p] = (unsigned char)fgetc(fp);
-      (*image_blu)[p] = (unsigned char)fgetc(fp);
-   }
-
-   if(fp != stdin) fclose(fp);
-   return(1);
-}
-
-/******************************************************************************
-* Function: write_ppm_image
-* Purpose: This function writes an image in PPM format. The file is either
-* written to the file specified by outfilename or to standard output if
-* outfilename = NULL. A comment can be written to the header if coment != NULL.
-******************************************************************************/
-int write_ppm_image(char *outfilename, unsigned char *image_red,
-    unsigned char *image_grn, unsigned char *image_blu, int rows,
-    int cols, char *comment, int maxval)
-{
-   FILE *fp;
-   long size, p;
-
-   /***************************************************************************
-   * Open the output image file for writing if a filename was given. If no
-   * filename was provided, set fp to write to standard output.
-   ***************************************************************************/
-   if(outfilename == 0) fp = stdout;
-   else{
-      if((fp = fopen(outfilename, "w")) == 0){
-         fprintf(stderr, "Error writing the file %s in write_pgm_image().\n",
-            outfilename);
-         return(0);
-      }
-   }
-
-   /***************************************************************************
-   * Write the header information to the PGM file.
-   ***************************************************************************/
-   fprintf(fp, "P6\n%d %d\n", cols, rows);
-   if(comment != 0)
-      if(strlen(comment) <= 70) fprintf(fp, "# %s\n", comment);
-   fprintf(fp, "%d\n", maxval);
-
-   /***************************************************************************
-   * Write the image data to the file.
-   ***************************************************************************/
-   size = (long)rows * (long)cols;
-   for(p=0;p<size;p++){      /* Write the image in pixel interleaved format. */
-      fputc(image_red[p], fp);
-      fputc(image_grn[p], fp);
-      fputc(image_blu[p], fp);
    }
 
    if(fp != stdout) fclose(fp);
