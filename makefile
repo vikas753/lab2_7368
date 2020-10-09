@@ -1,12 +1,24 @@
+# --- macros -------------------------------------------------------------
+
+SCC	= scc
+SCCOPT	= -vv -w -g -d -ww
+
 CC=gcc
 CFLAGS=-lm
 
-make: canny.c
-	$(CC) canny.c $(CFLAGS) -o canny
-	 
+# --- SpecC rules --------------------------------------------------------
+
+.SUFFIXES:
+.SUFFIXES:	.sc .c
+
+
+make: canny.c canny.sc
+	$(CC) canny.c $(CFLAGS) -o canny_gcc_o
+	$(SCC) canny -sc2out $(SCCOPT)
+   
 clean:
-	rm canny 
+	rm canny canny_gcc_o
 
 test:
-	./canny beachbus.pgm 0.6 0.3 0.8
-	eog beachbus.pgm_s_0.60_l_0.30_h_0.80.pgm	
+	./canny beachbus.pgm 0.6 0.3 0.8	
+	done
