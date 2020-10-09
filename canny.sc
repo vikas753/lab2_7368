@@ -59,6 +59,12 @@
 #define VERBOSE 0
 #define BOOSTBLURFACTOR 90.0
 
+
+#define MAX_ROWS 240
+#define MAX_COLS 320
+
+#define WINDOW_SIZE 21
+
 unsigned int read_pgm_image(char *infilename, unsigned char **image, int *rows,
     int *cols);
 int write_pgm_image(char *outfilename, unsigned char *image, int rows,
@@ -98,28 +104,19 @@ main(int argc, char *argv[])
    /****************************************************************************
    * Get the command line arguments.
    ****************************************************************************/
-   if(argc < 5){
+   if(argc < 2){
    fprintf(stderr,"\n<USAGE> %s image sigma tlow thigh [writedirim]\n",argv[0]);
       fprintf(stderr,"\n      image:      An image to process. Must be in ");
       fprintf(stderr,"PGM format.\n");
-      fprintf(stderr,"      sigma:      Standard deviation of the gaussian");
-      fprintf(stderr," blur kernel.\n");
-      fprintf(stderr,"      tlow:       Fraction (0.0-1.0) of the high ");
-      fprintf(stderr,"edge strength threshold.\n");
-      fprintf(stderr,"      thigh:      Fraction (0.0-1.0) of the distribution");
-      fprintf(stderr," of non-zero edge\n                  strengths for ");
-      fprintf(stderr,"hysteresis. The fraction is used to compute\n");
-      fprintf(stderr,"                  the high edge strength threshold.\n");
-      fprintf(stderr,"      writedirim: Optional argument to output ");
-      fprintf(stderr,"a floating point");
-      fprintf(stderr," direction image.\n\n");
       exit(1);
    }
 
    infilename = argv[1];
-   sigma = atof(argv[2]);
-   tlow = atof(argv[3]);
-   thigh = atof(argv[4]);
+   
+   /* Fix below parameters for SOC */
+   sigma = 0.6;
+   tlow = 0.3;
+   thigh = 0.8;
 
    if(argc == 6) dirfilename = infilename;
    else dirfilename = 0;
@@ -156,6 +153,20 @@ main(int argc, char *argv[])
       exit(1);
    }
 }
+
+/* Static buffer defs to deprecate dynamic allocations */
+
+unsigned char nms_static_buffer[MAX_ROWS*MAX_COLS];
+unsigned char edge_static_buffer[MAX_ROWS*MAX_COLS];
+
+short magnitude_static_buffer[MAX_ROWS*MAX_COLS];
+short deltaX_static_buffer[MAX_ROWS*MAX_COLS];
+short deltaY_static_buffer[MAX_ROWS*MAX_COLS];
+
+float tempim_static_buffer[MAX_ROWS*MAX_COLS];
+short int smoothedim_static_buffer[MAX_ROWS*MAX_COLS];
+
+float kernel_static_buffer[WINDOW_SIZE];
 
 /*******************************************************************************
 * PROCEDURE: canny
@@ -195,10 +206,7 @@ void canny(unsigned char *image, int rows, int cols, float sigma,
    * Perform non-maximal suppression.
    ****************************************************************************/
    if(VERBOSE) printf("Doing the non-maximal suppression.\n");
-   if((nms = (unsigned char *) calloc(rows*cols,sizeof(unsigned char)))==0){
-      fprintf(stderr, "Error allocating the nms image.\n");
-      exit(1);
-   }
+   nms = (unsigned char *) nms_static_buffer;
 
    non_max_supp(magnitude, delta_x, delta_y, rows, cols, nms);
 
@@ -206,22 +214,9 @@ void canny(unsigned char *image, int rows, int cols, float sigma,
    * Use hysteresis to mark the edge pixels.
    ****************************************************************************/
    if(VERBOSE) printf("Doing hysteresis thresholding.\n");
-   if((*edge=(unsigned char *)calloc(rows*cols,sizeof(unsigned char))) ==0){
-      fprintf(stderr, "Error allocating the edge image.\n");
-      exit(1);
-   }
+   *edge=(unsigned char *)edge_static_buffer;
 
    apply_hysteresis(magnitude, nms, rows, cols, tlow, thigh, *edge);
-
-   /****************************************************************************
-   * Free all of the memory that we allocated except for the edge image that
-   * is still being used to store out result.
-   ****************************************************************************/
-   free(smoothedim);
-   free(delta_x);
-   free(delta_y);
-   free(magnitude);
-   free(nms);
 }
 
 
@@ -238,12 +233,9 @@ void magnitude_x_y(short int *delta_x, short int *delta_y, int rows, int cols,
    int r, c, pos, sq1, sq2;
 
    /****************************************************************************
-   * Allocate an image to store the magnitude of the gradient.
+   * Assign an image to store the magnitude of the gradient.
    ****************************************************************************/
-   if((*magnitude = (short *) calloc(rows*cols, sizeof(short))) == 0){
-      fprintf(stderr, "Error allocating the magnitude image.\n");
-      exit(1);
-   }
+   *magnitude = (short *) magnitude_static_buffer;
 
    for(r=0,pos=0;r<rows;r++){
       for(c=0;c<cols;c++,pos++){
@@ -273,17 +265,12 @@ void derrivative_x_y(short int *smoothedim, int rows, int cols,
    int r, c, pos;
 
    /****************************************************************************
-   * Allocate images to store the derivatives.
+   * Assign static buffers to store the derivatives.
    ****************************************************************************/
-   if(((*delta_x) = (short *) calloc(rows*cols, sizeof(short))) == 0){
-      fprintf(stderr, "Error allocating the delta_x image.\n");
-      exit(1);
-   }
-   if(((*delta_y) = (short *) calloc(rows*cols, sizeof(short))) == 0){
-      fprintf(stderr, "Error allocating the delta_x image.\n");
-      exit(1);
-   }
-
+   *delta_x = (short *) deltaX_static_buffer;
+   
+   *delta_y = (short *) deltaY_static_buffer;
+   
    /****************************************************************************
    * Compute the x-derivative. Adjust the derivative at the borders to avoid
    * losing pixels.
@@ -340,17 +327,10 @@ void gaussian_smooth(unsigned char *image, int rows, int cols, float sigma,
    center = windowsize / 2;
 
    /****************************************************************************
-   * Allocate a temporary buffer image and the smoothed image.
+   * Assign buffer image and the smoothed image static buffers.
    ****************************************************************************/
-   if((tempim = (float *) calloc(rows*cols, sizeof(float))) == 0){
-      fprintf(stderr, "Error allocating the buffer image.\n");
-      exit(1);
-   }
-   if(((*smoothedim) = (short int *) calloc(rows*cols,
-         sizeof(short int))) == 0){
-      fprintf(stderr, "Error allocating the smoothed image.\n");
-      exit(1);
-   }
+   tempim = (float *) tempim_static_buffer;
+   *smoothedim = (short int *) smoothedim_static_buffer;
 
    /****************************************************************************
    * Blur in the x - direction.
@@ -388,8 +368,6 @@ void gaussian_smooth(unsigned char *image, int rows, int cols, float sigma,
       }
    }
 
-   free(tempim);
-   free(kernel);
 }
 
 /*******************************************************************************
@@ -407,10 +385,7 @@ void make_gaussian_kernel(float sigma, float **kernel, int *windowsize)
    center = (*windowsize) / 2;
 
    if(VERBOSE) printf("      The kernel has %d elements.\n", *windowsize);
-   if((*kernel = (float *) calloc((*windowsize), sizeof(float))) == 0){
-      fprintf(stderr, "Error callocing the gaussian kernel array.\n");
-      exit(1);
-   }
+   *kernel = (float*)kernel_static_buffer;
 
    for(i=0;i<(*windowsize);i++){
       x = (float)(i - center);
@@ -789,8 +764,6 @@ void non_max_supp(short *mag, short *gradx, short *grady, int nrows, int ncols,u
 #include <stdlib.h>
 #include <string.h>
 
-#define MAX_ROWS 240
-#define MAX_COLS 320
 
 char read_image_buffer[MAX_ROWS*MAX_COLS];
 

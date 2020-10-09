@@ -20,5 +20,5 @@ clean:
 	rm canny canny_gcc_o
 
 test:
-	./canny beachbus.pgm 0.6 0.3 0.8	
+	./canny beachbus.pgm 	
 	done
