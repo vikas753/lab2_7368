@@ -155,6 +155,7 @@ main(int argc, char *argv[])
       fprintf(stderr, "Error writing the edge image, %s.\n", outfilename);
       exit(1);
    }
+   return 0;
 }
 
 /*******************************************************************************

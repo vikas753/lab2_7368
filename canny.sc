@@ -135,8 +135,7 @@ main(int argc, char *argv[])
    ****************************************************************************/
    if(VERBOSE) printf("Starting Canny edge detection.\n");
    if(dirfilename != 0){
-      sprintf(composedfname, "%s_s_%3.2f_l_%3.2f_h_%3.2f.fim", infilename,
-      sigma, tlow, thigh);
+      sprintf(composedfname, "%s_sc.pgm", infilename);
       dirfilename = composedfname;
    }
    canny(image, rows, cols, sigma, tlow, thigh, &edge, dirfilename);
@@ -144,14 +143,14 @@ main(int argc, char *argv[])
    /****************************************************************************
    * Write out the edge image to a file.
    ****************************************************************************/
-   sprintf(outfilename, "%s_s_%3.2f_l_%3.2f_h_%3.2f.pgm", infilename,
-      sigma, tlow, thigh);
+   sprintf(outfilename, "%s_sc.pgm", infilename);
    blank_comment[0] = 0;
    if(VERBOSE) printf("Writing the edge iname in the file %s.\n", outfilename);
    if(write_pgm_image(outfilename, edge, rows, cols, blank_comment , 255) == 0){
       fprintf(stderr, "Error writing the edge image, %s.\n", outfilename);
       exit(1);
    }
+   return 0;
 }
 
 /* Static buffer defs to deprecate dynamic allocations */
