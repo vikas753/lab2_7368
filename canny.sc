@@ -55,6 +55,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <c_typed_queue.sh>
+
+#define Q_SIZE 2ul
+
 
 #define VERBOSE 0
 #define BOOSTBLURFACTOR 90.0
@@ -63,15 +67,31 @@
 #define MAX_ROWS 240
 #define MAX_COLS 320
 
+#define SIGMA 0.6;
+#define TLOW  0.3;
+#define THIGH 0.8;
+
+typedef struct image_data
+{
+  int rows;
+  int cols;
+  int terminate_value;
+  unsigned char img[MAX_ROWS*MAX_COLS];
+}image_data_t;
+
+// define interface and implementation of typed queue
+DEFINE_IC_TYPED_QUEUE(imagedata, image_data_t)
+
+
 #define WINDOW_SIZE 21
 
 unsigned int read_pgm_image(char *infilename, unsigned char **image, int *rows,
-    int *cols);
+    int *cols,image_data_t* read_image_buffer);
 int write_pgm_image(char *outfilename, unsigned char *image, int rows,
     int cols, char *comment, int maxval);
 
 void canny(unsigned char *image, int rows, int cols, float sigma,
-         float tlow, float thigh, unsigned char **edge, char *fname);
+         float tlow, float thigh, unsigned char *edge);
 void gaussian_smooth(unsigned char *image, int rows, int cols, float sigma,
         short int **smoothedim);
 void make_gaussian_kernel(float sigma, float **kernel, int *windowsize);
@@ -83,75 +103,224 @@ void apply_hysteresis(short int *mag, unsigned char *nms, int rows, int cols,
         float tlow, float thigh, unsigned char *edge);
 void non_max_supp(short *mag, short *gradx, short *grady, int nrows, int ncols,unsigned char *result); 
 
-main(int argc, char *argv[])
+#define TERMINATE_SENTINEL 0x5a5a5a5a
+
+#define MAX_ARGS 10
+
+// These are the only set of global variables which will be used to set 
+// system arguments of stimulus instance
+int argc_glo;
+char *argv_glo[MAX_ARGS];
+  
+// sender behavior with input image
+behavior Stimulus(i_imagedata_sender ch) {
+  image_data_t stimulus_beh_memory;
+  int argc,i=0;
+  char *argv[MAX_ARGS];
+  
+  void main(void)
+  {
+     char *infilename = 0;  /* Name of the input image */
+     unsigned char *image;     /* The input image */
+     int iter_index = 1;           /* The dimensions of the image. */
+
+     
+     argc = argc_glo;
+     for(;i<argc;i++)
+     {
+       argv[i] = argv_glo[i];
+     }
+     
+     /****************************************************************************
+     * Get the command line arguments.
+     ****************************************************************************/
+     if(argc < 2){
+       fprintf(stderr,"\n<USAGE> %s image \n",argv[0]);
+       fprintf(stderr,"\n      image:      An image to process. Must be in ");
+       fprintf(stderr,"PGM format.\n");
+       exit(1);
+     }
+     
+     while(iter_index<argc)
+     {
+       infilename = argv[iter_index];
+   
+       /****************************************************************************
+       * Read in the image. This read function allocates memory for the image.
+       ****************************************************************************/
+       if(VERBOSE) printf("Reading the image %s.\n", infilename);
+       if(read_pgm_image(infilename, &image, &stimulus_beh_memory.rows, &stimulus_beh_memory.cols,&stimulus_beh_memory) == 0){
+         fprintf(stderr, "Error reading the input image, %s.\n", infilename);
+         exit(1);
+       }
+       
+       stimulus_beh_memory.terminate_value = 0;
+       ch.send(stimulus_beh_memory);
+       iter_index++;
+     }
+     stimulus_beh_memory.terminate_value = TERMINATE_SENTINEL;
+     ch.send(stimulus_beh_memory); 
+   }
+};
+
+behavior Datain(i_imagedata_receiver rec_ch,i_imagedata_sender send_ch)
 {
-   char *infilename = 0;  /* Name of the input image */
-   char blank_comment[128]; /* Constant comment */
-   char *dirfilename = 0; /* Name of the output gradient direction image */
-   char outfilename[128];    /* Name of the output "edge" image */
-   char composedfname[128];  /* Name of the output "direction" image */
-   unsigned char *image;     /* The input image */
-   unsigned char *edge;      /* The output edge image */
-   int rows, cols;           /* The dimensions of the image. */
-   float sigma,              /* Standard deviation of the gaussian kernel. */
-	 tlow,               /* Fraction of the high threshold in hysteresis. */
-	 thigh;              /* High hysteresis threshold control. The actual
+  image_data_t datain_beh_memory;
+  void main(void)
+  {
+    while(1)
+    {
+      rec_ch.receive(&datain_beh_memory);
+      send_ch.send(datain_beh_memory);  
+      if(datain_beh_memory.terminate_value == TERMINATE_SENTINEL)
+      {
+        break;
+      }
+      
+    }
+  }  
+};
+
+behavior DUT(i_imagedata_receiver rec_ch,i_imagedata_sender send_ch)
+{
+  image_data_t dut_beh_memory_in,dut_beh_memory_out;
+  float sigma,              /* Standard deviation of the gaussian kernel. */
+	      tlow,               /* Fraction of the high threshold in hysteresis. */
+        thigh;              /* High hysteresis threshold control. The actual
 			        threshold is the (100 * thigh) percentage point
 			        in the histogram of the magnitude of the
 			        gradient image that passes non-maximal
 			        suppression. */
-
-   /****************************************************************************
-   * Get the command line arguments.
-   ****************************************************************************/
-   if(argc < 2){
-   fprintf(stderr,"\n<USAGE> %s image sigma tlow thigh [writedirim]\n",argv[0]);
-      fprintf(stderr,"\n      image:      An image to process. Must be in ");
-      fprintf(stderr,"PGM format.\n");
-      exit(1);
-   }
-
-   infilename = argv[1];
+  unsigned char *image;     /* The input image */
+  unsigned char *edge;      /* The output edge image */
    
-   /* Fix below parameters for SOC */
-   sigma = 0.6;
-   tlow = 0.3;
-   thigh = 0.8;
+                                   
+  void main(void)
+  {
+    /* Fix below parameters for SOC */
+    sigma = 0.6;
+    tlow = 0.3;
+    thigh = 0.8;
+ 
+    while(1)
+    {
+      rec_ch.receive(&dut_beh_memory_in);
+      
+      image = &dut_beh_memory_in.img[0];
+      edge  = &dut_beh_memory_out.img[0];
+      dut_beh_memory_out.rows = dut_beh_memory_in.rows;
+      dut_beh_memory_out.cols = dut_beh_memory_in.cols;
+      
+      if(dut_beh_memory_in.terminate_value == TERMINATE_SENTINEL)
+      {
+        dut_beh_memory_out.terminate_value = TERMINATE_SENTINEL;
+        send_ch.send(dut_beh_memory_out);
+        break;
+      }
+      
+      canny(image,dut_beh_memory_in.rows,dut_beh_memory_in.cols,sigma,tlow,thigh,edge);
+      send_ch.send(dut_beh_memory_out);
+        
+    }
+  }  
+};
 
-   if(argc == 6) dirfilename = infilename;
-   else dirfilename = 0;
+behavior Dataout(i_imagedata_receiver rec_ch,i_imagedata_sender send_ch)
+{
+  image_data_t dataout_beh_memory;
+  void main(void)
+  {
+    while(1)
+    {
+      rec_ch.receive(&dataout_beh_memory);
+      if(VERBOSE) printf("Dataout terminal_val : 0x%x.\n", dataout_beh_memory.terminate_value);
+    
+      send_ch.send(dataout_beh_memory);  
+      if(dataout_beh_memory.terminate_value == TERMINATE_SENTINEL)
+      {
+        break;
+      }
+    
+      
+    }
+  }  
+};
 
-   /****************************************************************************
-   * Read in the image. This read function allocates memory for the image.
-   ****************************************************************************/
-   if(VERBOSE) printf("Reading the image %s.\n", infilename);
-   if(read_pgm_image(infilename, &image, &rows, &cols) == 0){
-      fprintf(stderr, "Error reading the input image, %s.\n", infilename);
-      exit(1);
-   }
+behavior Monitor(i_imagedata_receiver rec_ch)
+{
+  int image_index = 0;
+  image_data_t monitor_beh_memory;
+  char blank_comment[128]; /* Constant comment */
+  char outfilename[128];    /* Name of the output "edge" image */
 
-   /****************************************************************************
-   * Perform the edge detection. All of the work takes place here.
-   ****************************************************************************/
-   if(VERBOSE) printf("Starting Canny edge detection.\n");
-   if(dirfilename != 0){
-      sprintf(composedfname, "%s_sc.pgm", infilename);
-      dirfilename = composedfname;
-   }
-   canny(image, rows, cols, sigma, tlow, thigh, &edge, dirfilename);
+  void main(void)
+  {
+    while(1)
+    {
+      rec_ch.receive(&monitor_beh_memory);
+      if(VERBOSE) printf("Monitor terminal_val : 0x%x.\n", monitor_beh_memory.terminate_value);
+      
+      if(monitor_beh_memory.terminate_value == TERMINATE_SENTINEL)
+      {
+        break;
+      }
+      
+      sprintf(outfilename, "sldl_output_%d_sc.pgm", image_index);
+      blank_comment[0] = 0;
+      image_index++;
+      if(VERBOSE) printf("Writing the edge iname in the file %s. rows : %d , cols : %d \n", outfilename , monitor_beh_memory.rows, monitor_beh_memory.cols);
+        if(write_pgm_image(outfilename, &monitor_beh_memory.img[0], monitor_beh_memory.rows, monitor_beh_memory.cols, blank_comment , 255) == 0){
+        fprintf(stderr, "Error writing the edge image, %s.\n", outfilename);
+        exit(1);
+      }        
+    }
+  }  
+};
 
-   /****************************************************************************
-   * Write out the edge image to a file.
-   ****************************************************************************/
-   sprintf(outfilename, "%s_sc.pgm", infilename);
-   blank_comment[0] = 0;
-   if(VERBOSE) printf("Writing the edge iname in the file %s.\n", outfilename);
-   if(write_pgm_image(outfilename, edge, rows, cols, blank_comment , 255) == 0){
-      fprintf(stderr, "Error writing the edge image, %s.\n", outfilename);
-      exit(1);
-   }
-   return 0;
-}
+// Platform behavior
+behavior Platform(i_imagedata_receiver rec_i,i_imagedata_sender send_i)
+{
+	c_imagedata_queue datain_dut_queue(Q_SIZE),dut_dataout_queue(Q_SIZE);
+ 
+	Datain datain_instance(rec_i,datain_dut_queue);
+  DUT dut_instance(datain_dut_queue,dut_dataout_queue);
+  Dataout dataout_instance(dut_dataout_queue,send_i);
+  
+	void main(void)	{
+    par
+    {
+			datain_instance;
+			dut_instance;
+      dataout_instance;
+    }
+	}
+};
+
+// main behavior
+behavior Main()
+{
+	c_imagedata_queue stimulus_platform_queue(Q_SIZE),platform_monitor_queue(Q_SIZE);
+	int i=0;
+	Platform platform_instance(stimulus_platform_queue,platform_monitor_queue);
+  Monitor  monitor_instance(platform_monitor_queue);
+	Stimulus stimulus_instance(stimulus_platform_queue);
+ 
+  int main(int argc, char *argv[])	{
+    // Workaround for setting system arguments onto global variables and then using them in stimulus
+    argc_glo = argc;
+    for(;i<argc;i++)
+    {
+      argv_glo[i] = argv[i];
+    }
+    
+		par {
+		  stimulus_instance;
+	    platform_instance;
+      monitor_instance;
+		}
+		return 0;
+	}
+};
 
 /* Static buffer defs to deprecate dynamic allocations */
 
@@ -174,7 +343,7 @@ float kernel_static_buffer[WINDOW_SIZE];
 * DATE: 2/15/96
 *******************************************************************************/
 void canny(unsigned char *image, int rows, int cols, float sigma,
-         float tlow, float thigh, unsigned char **edge, char *fname)
+         float tlow, float thigh,unsigned char *edge)
 {
    unsigned char *nms;        /* Points that are local maximal magnitude. */
    short int *smoothedim,     /* The image after gaussian smoothing.      */
@@ -213,9 +382,8 @@ void canny(unsigned char *image, int rows, int cols, float sigma,
    * Use hysteresis to mark the edge pixels.
    ****************************************************************************/
    if(VERBOSE) printf("Doing hysteresis thresholding.\n");
-   *edge=(unsigned char *)edge_static_buffer;
-
-   apply_hysteresis(magnitude, nms, rows, cols, tlow, thigh, *edge);
+   
+   apply_hysteresis(magnitude, nms, rows, cols, tlow, thigh, edge);
 }
 
 
@@ -409,8 +577,6 @@ void make_gaussian_kernel(float sigma, float **kernel, int *windowsize)
 
 #include <stdio.h>
 #include <stdlib.h>
-
-#define VERBOSE 0
 
 #define NOEDGE 255
 #define POSSIBLE_EDGE 128
@@ -763,9 +929,6 @@ void non_max_supp(short *mag, short *gradx, short *grady, int nrows, int ncols,u
 #include <stdlib.h>
 #include <string.h>
 
-
-char read_image_buffer[MAX_ROWS*MAX_COLS];
-
 /******************************************************************************
 * Function: read_pgm_image
 * Purpose: This function reads in an image in PGM format. The image can be
@@ -777,7 +940,7 @@ char read_image_buffer[MAX_ROWS*MAX_COLS];
 * image. Upon failure, this function returns 0, upon sucess it returns 1.
 ******************************************************************************/
 unsigned int read_pgm_image(char *infilename, unsigned char **image, int *rows,
-    int *cols)
+    int *cols,image_data_t* read_image_buffer)
 {
    FILE *fp;
    char buf[71];
@@ -819,7 +982,7 @@ unsigned int read_pgm_image(char *infilename, unsigned char **image, int *rows,
    * Assign the max buffer to store image
    ***************************************************************************/
 
-   (*image) = (unsigned char *) read_image_buffer;
+   (*image) = (unsigned char *) read_image_buffer->img;
 
    if((unsigned int)(*rows) != fread((*image), (*cols), (*rows), fp)){
       fprintf(stderr, "Error reading the image data in read_pgm_image().\n");

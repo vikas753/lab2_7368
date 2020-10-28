@@ -1,0 +1,35 @@
+./canny beachbus.pgm;
+Reading the image beachbus.pgm.
+Rows , Cols of the image 240 , 320 
+ DBG VV STIM ends here !
+ DATAIN terminal_val : 0x0.
+DATAIN terminal_val : 0x5a5a5a5a.
+ DBG VV DIN ends here !
+ DUT main 
+DUT terminal_val : 0x0.
+Smoothing the image using a gaussian kernel.
+   Computing the gaussian smoothing kernel.
+      The kernel has 5 elements.
+The filter coefficients are:
+kernel[0] = 0.002566
+kernel[1] = 0.165525
+kernel[2] = 0.663818
+kernel[3] = 0.165525
+kernel[4] = 0.002566
+   Bluring the image in the X-direction.
+   Bluring the image in the Y-direction.
+Computing the X and Y first derivatives.
+   Computing the X-direction derivative.
+   Computing the Y-direction derivative.
+Computing the magnitude of the gradient.
+Doing the non-maximal suppression.
+Doing hysteresis thresholding.
+The input low and high fractions of 0.300000 and 0.800000 computed to
+magnitude of the gradient threshold values of: 995 3317
+DUT terminal_val : 0x5a5a5a5a.
+ DBG VV DUT ends here !
+ Dataout terminal_val : 0x0.
+Monitor terminal_val : 0x0.
+Writing the edge iname in the file sldl_output_0_sc.pgm. rows : 240 , cols : 320 
+./canny_gcc_o beachbus.pgm 0.6 0.3 0.8;
+cmp -l beachbus.pgm_s_0.60_l_0.30_h_0.80.pgm sldl_output_0_sc.pgm;
