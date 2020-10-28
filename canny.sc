@@ -163,6 +163,7 @@ behavior Stimulus(i_imagedata_sender ch) {
    }
 };
 
+// Data input block which takes in an image as an input
 behavior Datain(i_imagedata_receiver rec_ch,i_imagedata_sender send_ch)
 {
   image_data_t datain_beh_memory;
@@ -181,6 +182,7 @@ behavior Datain(i_imagedata_receiver rec_ch,i_imagedata_sender send_ch)
   }  
 };
 
+// Device Under test which runs canny algorithm
 behavior DUT(i_imagedata_receiver rec_ch,i_imagedata_sender send_ch)
 {
   image_data_t dut_beh_memory_in,dut_beh_memory_out;
@@ -225,6 +227,7 @@ behavior DUT(i_imagedata_receiver rec_ch,i_imagedata_sender send_ch)
   }  
 };
 
+// Dataout block of platform to send image to monitor
 behavior Dataout(i_imagedata_receiver rec_ch,i_imagedata_sender send_ch)
 {
   image_data_t dataout_beh_memory;
@@ -233,8 +236,7 @@ behavior Dataout(i_imagedata_receiver rec_ch,i_imagedata_sender send_ch)
     while(1)
     {
       rec_ch.receive(&dataout_beh_memory);
-      if(VERBOSE) printf("Dataout terminal_val : 0x%x.\n", dataout_beh_memory.terminate_value);
-    
+      
       send_ch.send(dataout_beh_memory);  
       if(dataout_beh_memory.terminate_value == TERMINATE_SENTINEL)
       {
@@ -246,6 +248,7 @@ behavior Dataout(i_imagedata_receiver rec_ch,i_imagedata_sender send_ch)
   }  
 };
 
+// Monitor behavior , for writing the output
 behavior Monitor(i_imagedata_receiver rec_ch)
 {
   int image_index = 0;
@@ -258,7 +261,6 @@ behavior Monitor(i_imagedata_receiver rec_ch)
     while(1)
     {
       rec_ch.receive(&monitor_beh_memory);
-      if(VERBOSE) printf("Monitor terminal_val : 0x%x.\n", monitor_beh_memory.terminate_value);
       
       if(monitor_beh_memory.terminate_value == TERMINATE_SENTINEL)
       {
@@ -277,7 +279,7 @@ behavior Monitor(i_imagedata_receiver rec_ch)
   }  
 };
 
-// Platform behavior
+// Platform behavior , spawns datain , dut and dataout
 behavior Platform(i_imagedata_receiver rec_i,i_imagedata_sender send_i)
 {
 	c_imagedata_queue datain_dut_queue(Q_SIZE),dut_dataout_queue(Q_SIZE);
@@ -296,7 +298,7 @@ behavior Platform(i_imagedata_receiver rec_i,i_imagedata_sender send_i)
 	}
 };
 
-// main behavior
+// main behavior ( spawns stimulus , platform and monitor )
 behavior Main()
 {
 	c_imagedata_queue stimulus_platform_queue(Q_SIZE),platform_monitor_queue(Q_SIZE);
