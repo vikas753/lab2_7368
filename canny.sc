@@ -67,10 +67,11 @@
 #define MAX_ROWS 240
 #define MAX_COLS 320
 
-#define SIGMA 0.6;
-#define TLOW  0.3;
-#define THIGH 0.8;
+#define SIGMA 0.6f
+#define TLOW  0.3f
+#define THIGH 0.8f
 
+// Data structure for holding image contents
 typedef struct image_data
 {
   int rows;
@@ -78,6 +79,14 @@ typedef struct image_data
   int terminate_value;
   unsigned char img[MAX_ROWS*MAX_COLS];
 }image_data_t;
+
+
+// Data structure for holding smoothened or derivate of image contents
+typedef struct image_data_short
+{
+  short img[MAX_ROWS*MAX_COLS];
+}image_data_short_t;
+
 
 // define interface and implementation of typed queue
 DEFINE_IC_TYPED_QUEUE(imagedata, image_data_t)
@@ -90,15 +99,6 @@ unsigned int read_pgm_image(char *infilename, unsigned char **image, int *rows,
 int write_pgm_image(char *outfilename, unsigned char *image, int rows,
     int cols, char *comment, int maxval);
 
-void canny(unsigned char *image, int rows, int cols, float sigma,
-         float tlow, float thigh, unsigned char *edge);
-void gaussian_smooth(unsigned char *image, int rows, int cols, float sigma,
-        short int **smoothedim);
-void make_gaussian_kernel(float sigma, float **kernel, int *windowsize);
-void derrivative_x_y(short int *smoothedim, int rows, int cols,
-        short int **delta_x, short int **delta_y);
-void magnitude_x_y(short int *delta_x, short int *delta_y, int rows, int cols,
-        short int **magnitude);
 void apply_hysteresis(short int *mag, unsigned char *nms, int rows, int cols,
         float tlow, float thigh, unsigned char *edge);
 void non_max_supp(short *mag, short *gradx, short *grady, int nrows, int ncols,unsigned char *result); 
@@ -182,34 +182,264 @@ behavior Datain(i_imagedata_receiver rec_ch,i_imagedata_sender send_ch)
   }  
 };
 
+
+// Gaussian Smooth : child behavior , which smoothens an image and produces a smoothened output
+behavior gaussian_smooth(in image_data_t image_arg,out image_data_short_t smoothedim)
+{
+  int i;
+  float x, fx;
+  
+  int r, c, rr, cc,     /* Counter variables. */
+      windowsize,        /* Dimension of the gaussian kernel. */
+      center;            /* Half of the windowsize. */
+      
+  float *tempim,        /* Buffer for separable filter gaussian smoothing. */
+         *kernel,        /* A one dimensional gaussian kernel. */
+         dot,            /* Dot product summing variable. */
+         sum,sigma;            /* Sum of the kernel weights variable. */
+         
+  int rows,cols;
+  unsigned char* image;
+  float tempim_static_buffer[MAX_ROWS*MAX_COLS];
+  float kernel_static_buffer[WINDOW_SIZE];
+   
+  void main(void)
+  {
+   image = image_arg.img;
+   
+   tempim = tempim_static_buffer;
+   kernel = kernel_static_buffer;
+   
+   rows = MAX_ROWS;
+   cols = MAX_COLS;
+   sigma = 0.6;
+   
+
+   /****************************************************************************
+   * Create a 1-dimensional gaussian smoothing kernel.
+   ****************************************************************************/
+   if(VERBOSE) printf("   Computing the gaussian smoothing kernel.\n");
+
+   windowsize = 1 + 2 * ceil(2.5 * sigma);
+   center = windowsize / 2;
+
+   if(VERBOSE) printf("      The kernel has %d elements.\n", windowsize);
+   
+   for(i=0;i<windowsize;i++){
+      x = (float)(i - center);
+      fx = pow(2.71828, -0.5*x*x/(sigma*sigma)) / (sigma * sqrt(6.2831853));
+      kernel[i] = fx;
+      sum += fx;
+   }
+
+   for(i=0;i<windowsize;i++) kernel[i] /= sum;
+
+   if(VERBOSE){
+      printf("The filter coefficients are:\n");
+      for(i=0;i<windowsize;i++)
+         printf("kernel[%d] = %f\n", i, kernel[i]);
+   }   center = windowsize / 2;
+
+   /****************************************************************************
+   * Assign buffer image and the smoothed image static buffers.
+   ****************************************************************************/
+   
+   /****************************************************************************
+   * Blur in the x - direction.
+   ****************************************************************************/
+   if(VERBOSE) printf("   Bluring the image in the X-direction.\n");
+   for(r=0;r<rows;r++){
+      for(c=0;c<cols;c++){
+         dot = 0.0;
+         sum = 0.0;
+         for(cc=(-center);cc<=center;cc++){
+            if(((c+cc) >= 0) && ((c+cc) < cols)){
+               dot += (float)image[r*cols+(c+cc)] * kernel[center+cc];
+               sum += kernel[center+cc];
+            }
+         }
+         tempim[r*cols+c] = dot/sum;
+      }
+   }
+
+   /****************************************************************************
+   * Blur in the y - direction.
+   ****************************************************************************/
+   if(VERBOSE) printf("   Bluring the image in the Y-direction.\n");
+   for(c=0;c<cols;c++){
+      for(r=0;r<rows;r++){
+         sum = 0.0;
+         dot = 0.0;
+         for(rr=(-center);rr<=center;rr++){
+            if(((r+rr) >= 0) && ((r+rr) < rows)){
+               dot += tempim[(r+rr)*cols+c] * kernel[center+rr];
+               sum += kernel[center+rr];
+            }
+         }
+         smoothedim.img[r*cols+c] = (short int)(dot*BOOSTBLURFACTOR/sum + 0.5);
+      }
+   }
+    
+  }    
+}; 
+
+// Derivative x,y behavior : Performs a derivative on x and y-axis of an image and sends out on a port.
+behavior Derivative_x_y(in image_data_short_t smooth_data_arg,out image_data_short_t delta_x,out image_data_short_t delta_y)
+{
+  int r, c, pos, rows, cols;
+  short int *smoothedim;
+  
+  void main(void)
+  {
+   smoothedim = smooth_data_arg.img;
+   
+   /****************************************************************************
+   * Assign static buffers to store the derivatives.
+   ****************************************************************************/
+   rows = MAX_ROWS;
+   cols = MAX_COLS;
+   
+   /****************************************************************************
+   * Compute the x-derivative. Adjust the derivative at the borders to avoid
+   * losing pixels.
+   ****************************************************************************/
+   if(VERBOSE) printf("   Computing the X-direction derivative.\n");
+   for(r=0;r<rows;r++){
+      pos = r * cols;
+      delta_x.img[pos] = smoothedim[pos+1] - smoothedim[pos];
+      pos++;
+      for(c=1;c<(cols-1);c++,pos++){
+         delta_x.img[pos] = smoothedim[pos+1] - smoothedim[pos-1];
+      }
+      delta_x.img[pos] = smoothedim[pos] - smoothedim[pos-1];
+   }
+
+   /****************************************************************************
+   * Compute the y-derivative. Adjust the derivative at the borders to avoid
+   * losing pixels.
+   ****************************************************************************/
+   if(VERBOSE) printf("   Computing the Y-direction derivative.\n");
+   for(c=0;c<cols;c++){
+      pos = c;
+      delta_y.img[pos] = smoothedim[pos+cols] - smoothedim[pos];
+      pos += cols;
+      for(r=1;r<(rows-1);r++,pos+=cols){
+         delta_y.img[pos] = smoothedim[pos+cols] - smoothedim[pos-cols];
+      }
+      delta_y.img[pos] = smoothedim[pos] - smoothedim[pos-cols];
+   }    
+  }
+};
+
+// Magnitude x,y : Computes the magnitude in X and Y direction and sends output on a port
+behavior Magnitude_x_y(in image_data_short_t delta_x_img, in image_data_short_t delta_y_img,out image_data_short_t magnitude_img)
+{
+  int r, c, pos, sq1, sq2,rows ,cols;
+  short int *delta_x; 
+  short int *delta_y;
+  
+  void main(void)
+  {
+    delta_x = delta_x_img.img;
+    delta_y = delta_y_img.img;
+    /****************************************************************************
+    * Assign an image to store the magnitude of the gradient.
+    ****************************************************************************/
+    rows = MAX_ROWS;
+    cols = MAX_COLS;
+
+    for(r=0,pos=0;r<rows;r++){
+      for(c=0;c<cols;c++,pos++){
+         sq1 = (int)delta_x[pos] * (int)delta_x[pos];
+         sq2 = (int)delta_y[pos] * (int)delta_y[pos];
+         magnitude_img.img[pos] = (short)(0.5 + sqrt((float)sq1 + (float)sq2));
+      }
+    }
+
+  }  
+};
+
+// Non maximum suppression : Performs a non maximal suppression on an image alongwith x and y gradients and sends output on a port
+behavior Non_max_supp(in image_data_short_t mag_img,in image_data_short_t gradx_img,in image_data_short_t grady_img,out image_data_t result_img)
+{
+  int rows,cols;
+  unsigned char* result_arg;
+  unsigned char nms_static_buffer_temp[MAX_ROWS*MAX_COLS];
+  int i=0;
+  short *mag;
+  short *gradx;
+  short *grady;
+  
+  void main(void)
+  {
+    rows = MAX_ROWS;
+    cols = MAX_COLS;
+    mag = mag_img.img;
+    gradx = gradx_img.img;
+    grady = grady_img.img;
+    
+    non_max_supp(mag, gradx, grady, rows, cols, nms_static_buffer_temp);
+    for(i=0;i<(MAX_ROWS*MAX_COLS);i++)
+    {
+      result_img.img[i] = nms_static_buffer_temp[i];    
+    } 
+  }    
+}; 
+
+// Apply Hysterisi behavior : Computes hysterisis on an image and sends output on a port
+behavior Apply_hysteresis(in image_data_short_t mag_img, in image_data_t nms_img,out image_data_t edge_img)
+{
+  int rows,cols,i;
+  float tlow,thigh;
+  
+  short int *mag; 
+  unsigned char *nms;
+  
+  unsigned char hysterisis_static_buffer_temp[MAX_ROWS*MAX_COLS];
+  
+  void main(void)
+  {
+    mag = mag_img.img;
+    nms = nms_img.img;
+    
+    rows = MAX_ROWS;
+    cols = MAX_COLS;
+    tlow = TLOW;
+    thigh = THIGH;
+    
+    apply_hysteresis(mag, nms, rows, cols, tlow, thigh, hysterisis_static_buffer_temp);
+    for(i=0;i<(MAX_ROWS*MAX_COLS);i++)
+    {
+      edge_img.img[i] = hysterisis_static_buffer_temp[i];    
+    } 
+  }    
+};
+
 // Device Under test which runs canny algorithm
 behavior DUT(i_imagedata_receiver rec_ch,i_imagedata_sender send_ch)
 {
   image_data_t dut_beh_memory_in,dut_beh_memory_out;
-  float sigma,              /* Standard deviation of the gaussian kernel. */
-	      tlow,               /* Fraction of the high threshold in hysteresis. */
-        thigh;              /* High hysteresis threshold control. The actual
-			        threshold is the (100 * thigh) percentage point
-			        in the histogram of the magnitude of the
-			        gradient image that passes non-maximal
-			        suppression. */
-  unsigned char *image;     /* The input image */
-  unsigned char *edge;      /* The output edge image */
-   
+
+  image_data_short_t smoothedim_data;
+  
+  image_data_short_t deltaX_data;
+  image_data_short_t deltaY_data;  
+  image_data_short_t magnitude_data;  
+  image_data_t       nms_data;
+  
+  gaussian_smooth   gaussian_smooth_instance(dut_beh_memory_in,smoothedim_data);
+  Derivative_x_y    derivative_x_y_instance(smoothedim_data,deltaX_data,deltaY_data);
+  Magnitude_x_y     magnitude_x_y_instance(deltaX_data,deltaY_data,magnitude_data);
+  Non_max_supp      non_max_supp_instance(magnitude_data,deltaX_data,deltaY_data,nms_data);
+  Apply_hysteresis  apply_hysterisis_instance(magnitude_data,nms_data,dut_beh_memory_out);
                                    
   void main(void)
   {
-    /* Fix below parameters for SOC */
-    sigma = 0.6;
-    tlow = 0.3;
-    thigh = 0.8;
- 
+
     while(1)
     {
       rec_ch.receive(&dut_beh_memory_in);
       
-      image = &dut_beh_memory_in.img[0];
-      edge  = &dut_beh_memory_out.img[0];
       dut_beh_memory_out.rows = dut_beh_memory_in.rows;
       dut_beh_memory_out.cols = dut_beh_memory_in.cols;
       
@@ -220,7 +450,13 @@ behavior DUT(i_imagedata_receiver rec_ch,i_imagedata_sender send_ch)
         break;
       }
       
-      canny(image,dut_beh_memory_in.rows,dut_beh_memory_in.cols,sigma,tlow,thigh,edge);
+      // Sequential execution of all child behaviors of DUT
+      gaussian_smooth_instance;
+      derivative_x_y_instance;
+      magnitude_x_y_instance;
+      non_max_supp_instance;
+      apply_hysterisis_instance;
+      
       send_ch.send(dut_beh_memory_out);
         
     }
@@ -298,6 +534,8 @@ behavior Platform(i_imagedata_receiver rec_i,i_imagedata_sender send_i)
 	}
 };
 
+
+
 // main behavior ( spawns stimulus , platform and monitor )
 behavior Main()
 {
@@ -324,253 +562,6 @@ behavior Main()
 	}
 };
 
-/* Static buffer defs to deprecate dynamic allocations */
-
-unsigned char nms_static_buffer[MAX_ROWS*MAX_COLS];
-unsigned char edge_static_buffer[MAX_ROWS*MAX_COLS];
-
-short magnitude_static_buffer[MAX_ROWS*MAX_COLS];
-short deltaX_static_buffer[MAX_ROWS*MAX_COLS];
-short deltaY_static_buffer[MAX_ROWS*MAX_COLS];
-
-float tempim_static_buffer[MAX_ROWS*MAX_COLS];
-short int smoothedim_static_buffer[MAX_ROWS*MAX_COLS];
-
-float kernel_static_buffer[WINDOW_SIZE];
-
-/*******************************************************************************
-* PROCEDURE: canny
-* PURPOSE: To perform canny edge detection.
-* NAME: Mike Heath
-* DATE: 2/15/96
-*******************************************************************************/
-void canny(unsigned char *image, int rows, int cols, float sigma,
-         float tlow, float thigh,unsigned char *edge)
-{
-   unsigned char *nms;        /* Points that are local maximal magnitude. */
-   short int *smoothedim,     /* The image after gaussian smoothing.      */
-             *delta_x,        /* The first devivative image, x-direction. */
-             *delta_y,        /* The first derivative image, y-direction. */
-             *magnitude;      /* The magnitude of the gadient image.      */
-
-   /****************************************************************************
-   * Perform gaussian smoothing on the image using the input standard
-   * deviation.
-   ****************************************************************************/
-   if(VERBOSE) printf("Smoothing the image using a gaussian kernel.\n");
-   gaussian_smooth(image, rows, cols, sigma, &smoothedim);
-
-   /****************************************************************************
-   * Compute the first derivative in the x and y directions.
-   ****************************************************************************/
-   if(VERBOSE) printf("Computing the X and Y first derivatives.\n");
-   derrivative_x_y(smoothedim, rows, cols, &delta_x, &delta_y);
-
-   /****************************************************************************
-   * Compute the magnitude of the gradient.
-   ****************************************************************************/
-   if(VERBOSE) printf("Computing the magnitude of the gradient.\n");
-   magnitude_x_y(delta_x, delta_y, rows, cols, &magnitude);
-
-   /****************************************************************************
-   * Perform non-maximal suppression.
-   ****************************************************************************/
-   if(VERBOSE) printf("Doing the non-maximal suppression.\n");
-   nms = (unsigned char *) nms_static_buffer;
-
-   non_max_supp(magnitude, delta_x, delta_y, rows, cols, nms);
-
-   /****************************************************************************
-   * Use hysteresis to mark the edge pixels.
-   ****************************************************************************/
-   if(VERBOSE) printf("Doing hysteresis thresholding.\n");
-   
-   apply_hysteresis(magnitude, nms, rows, cols, tlow, thigh, edge);
-}
-
-
-/*******************************************************************************
-* PROCEDURE: magnitude_x_y
-* PURPOSE: Compute the magnitude of the gradient. This is the square root of
-* the sum of the squared derivative values.
-* NAME: Mike Heath
-* DATE: 2/15/96
-*******************************************************************************/
-void magnitude_x_y(short int *delta_x, short int *delta_y, int rows, int cols,
-        short int **magnitude)
-{
-   int r, c, pos, sq1, sq2;
-
-   /****************************************************************************
-   * Assign an image to store the magnitude of the gradient.
-   ****************************************************************************/
-   *magnitude = (short *) magnitude_static_buffer;
-
-   for(r=0,pos=0;r<rows;r++){
-      for(c=0;c<cols;c++,pos++){
-         sq1 = (int)delta_x[pos] * (int)delta_x[pos];
-         sq2 = (int)delta_y[pos] * (int)delta_y[pos];
-         (*magnitude)[pos] = (short)(0.5 + sqrt((float)sq1 + (float)sq2));
-      }
-   }
-
-}
-
-/*******************************************************************************
-* PROCEDURE: derrivative_x_y
-* PURPOSE: Compute the first derivative of the image in both the x any y
-* directions. The differential filters that are used are:
-*
-*                                          -1
-*         dx =  -1 0 +1     and       dy =  0
-*                                          +1
-*
-* NAME: Mike Heath
-* DATE: 2/15/96
-*******************************************************************************/
-void derrivative_x_y(short int *smoothedim, int rows, int cols,
-        short int **delta_x, short int **delta_y)
-{
-   int r, c, pos;
-
-   /****************************************************************************
-   * Assign static buffers to store the derivatives.
-   ****************************************************************************/
-   *delta_x = (short *) deltaX_static_buffer;
-   
-   *delta_y = (short *) deltaY_static_buffer;
-   
-   /****************************************************************************
-   * Compute the x-derivative. Adjust the derivative at the borders to avoid
-   * losing pixels.
-   ****************************************************************************/
-   if(VERBOSE) printf("   Computing the X-direction derivative.\n");
-   for(r=0;r<rows;r++){
-      pos = r * cols;
-      (*delta_x)[pos] = smoothedim[pos+1] - smoothedim[pos];
-      pos++;
-      for(c=1;c<(cols-1);c++,pos++){
-         (*delta_x)[pos] = smoothedim[pos+1] - smoothedim[pos-1];
-      }
-      (*delta_x)[pos] = smoothedim[pos] - smoothedim[pos-1];
-   }
-
-   /****************************************************************************
-   * Compute the y-derivative. Adjust the derivative at the borders to avoid
-   * losing pixels.
-   ****************************************************************************/
-   if(VERBOSE) printf("   Computing the Y-direction derivative.\n");
-   for(c=0;c<cols;c++){
-      pos = c;
-      (*delta_y)[pos] = smoothedim[pos+cols] - smoothedim[pos];
-      pos += cols;
-      for(r=1;r<(rows-1);r++,pos+=cols){
-         (*delta_y)[pos] = smoothedim[pos+cols] - smoothedim[pos-cols];
-      }
-      (*delta_y)[pos] = smoothedim[pos] - smoothedim[pos-cols];
-   }
-}
-
-/*******************************************************************************
-* PROCEDURE: gaussian_smooth
-* PURPOSE: Blur an image with a gaussian filter.
-* NAME: Mike Heath
-* DATE: 2/15/96
-*******************************************************************************/
-void gaussian_smooth(unsigned char *image, int rows, int cols, float sigma,
-        short int **smoothedim)
-{
-   int r, c, rr, cc,     /* Counter variables. */
-      windowsize,        /* Dimension of the gaussian kernel. */
-      center;            /* Half of the windowsize. */
-   float *tempim,        /* Buffer for separable filter gaussian smoothing. */
-         *kernel,        /* A one dimensional gaussian kernel. */
-         dot,            /* Dot product summing variable. */
-         sum;            /* Sum of the kernel weights variable. */
-
-   /****************************************************************************
-   * Create a 1-dimensional gaussian smoothing kernel.
-   ****************************************************************************/
-   if(VERBOSE) printf("   Computing the gaussian smoothing kernel.\n");
-   make_gaussian_kernel(sigma, &kernel, &windowsize);
-   center = windowsize / 2;
-
-   /****************************************************************************
-   * Assign buffer image and the smoothed image static buffers.
-   ****************************************************************************/
-   tempim = (float *) tempim_static_buffer;
-   *smoothedim = (short int *) smoothedim_static_buffer;
-
-   /****************************************************************************
-   * Blur in the x - direction.
-   ****************************************************************************/
-   if(VERBOSE) printf("   Bluring the image in the X-direction.\n");
-   for(r=0;r<rows;r++){
-      for(c=0;c<cols;c++){
-         dot = 0.0;
-         sum = 0.0;
-         for(cc=(-center);cc<=center;cc++){
-            if(((c+cc) >= 0) && ((c+cc) < cols)){
-               dot += (float)image[r*cols+(c+cc)] * kernel[center+cc];
-               sum += kernel[center+cc];
-            }
-         }
-         tempim[r*cols+c] = dot/sum;
-      }
-   }
-
-   /****************************************************************************
-   * Blur in the y - direction.
-   ****************************************************************************/
-   if(VERBOSE) printf("   Bluring the image in the Y-direction.\n");
-   for(c=0;c<cols;c++){
-      for(r=0;r<rows;r++){
-         sum = 0.0;
-         dot = 0.0;
-         for(rr=(-center);rr<=center;rr++){
-            if(((r+rr) >= 0) && ((r+rr) < rows)){
-               dot += tempim[(r+rr)*cols+c] * kernel[center+rr];
-               sum += kernel[center+rr];
-            }
-         }
-         (*smoothedim)[r*cols+c] = (short int)(dot*BOOSTBLURFACTOR/sum + 0.5);
-      }
-   }
-
-}
-
-/*******************************************************************************
-* PROCEDURE: make_gaussian_kernel
-* PURPOSE: Create a one dimensional gaussian kernel.
-* NAME: Mike Heath
-* DATE: 2/15/96
-*******************************************************************************/
-void make_gaussian_kernel(float sigma, float **kernel, int *windowsize)
-{
-   int i, center;
-   float x, fx, sum=0.0;
-
-   *windowsize = 1 + 2 * ceil(2.5 * sigma);
-   center = (*windowsize) / 2;
-
-   if(VERBOSE) printf("      The kernel has %d elements.\n", *windowsize);
-   *kernel = (float*)kernel_static_buffer;
-
-   for(i=0;i<(*windowsize);i++){
-      x = (float)(i - center);
-      fx = pow(2.71828, -0.5*x*x/(sigma*sigma)) / (sigma * sqrt(6.2831853));
-      (*kernel)[i] = fx;
-      sum += fx;
-   }
-
-   for(i=0;i<(*windowsize);i++) (*kernel)[i] /= sum;
-
-   if(VERBOSE){
-      printf("The filter coefficients are:\n");
-      for(i=0;i<(*windowsize);i++)
-         printf("kernel[%d] = %f\n", i, (*kernel)[i]);
-   }
-}
 /*******************************************************************************
 * FILE: hysteresis.c
 * This code was re-written by Mike Heath from original code obtained indirectly
